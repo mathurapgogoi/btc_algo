@@ -32,13 +32,17 @@ def get_candles(limit=60):
             params={"symbol": SYMBOL, "interval": "5m", "limit": str(limit)},
             timeout=10
         )
-       resp = r.json()
-print(f"API response keys: {list(resp.keys())}")
-return resp.get("data", resp.get("result", resp.get("klines", [])))
+        resp = r.json()
+        print(f"API Status: {r.status_code}")
+        print(f"API Response: {str(resp)[:300]}")
+        candles = resp.get("data", resp.get("result", resp.get("klines", resp.get("candles", []))))
+        if isinstance(candles, list):
+            return candles
+        return []
     except Exception as e:
         print(f"Candle error: {e}")
         return []
-
+        
 def ema(values, period):
     if len(values) < period:
         return values[-1]
