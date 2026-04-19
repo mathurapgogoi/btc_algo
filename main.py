@@ -18,7 +18,7 @@ MAX_LOSSES = 2
 
 # Two different base URLs as per official docs
 BASE_URL   = "https://api.sharkexchange.in"
-PUBLIC_URL = "https://marketdata.sharkexchange.in"
+PUBLIC_URL = "https://api.sharkexchange.in"
 
 daily_losses = 0
 last_day     = datetime.now().date()
@@ -30,27 +30,32 @@ def generate_signature(secret, data):
 BASE_URL   = "https://api.sharkexchange.in"
 
 def get_candles(limit=60):
-    urls_to_try = [
-        ("POST", "https://api.sharkexchange.in/v1/market/klines"),
-        ("POST", "https://market.sharkexchange.in/v1/market/klines"),
-        ("POST", "https://data.sharkexchange.in/v1/market/klines"),
-        ("POST", "https://public.sharkexchange.in/v1/market/klines"),
-    ]
-    body = {"symbol": SYMBOL, "interval": "5m", "limit": limit, "priceType": "LAST_PRICE"}
-    for method, url in urls_to_try:
-        try:
-            r = requests.post(url, json=body, timeout=5)
-            print(f"{r.status_code} {url[:50]}: {str(r.json())[:100]}")
-            if r.status_code == 200:
-                resp = r.json()
-                for key in ["data", "result", "klines", "candles", "list"]:
-                    if key in resp and isinstance(resp[key], list) and len(resp[key]) > 5:
-                        return resp[key]
-                if isinstance(resp, list) and len(resp) > 5:
-                    return resp
-        except Exception as e:
-            print(f"Error {url[:40]}: {e}")
-    return []
+    try:
+        # No timestamp for public/market endpoints per official docs
+        body = {
+            "symbol":    SYMBOL,
+            "interval":  "5m",
+            "limit":     limit,
+            "priceType": "LAST_PRICE"
+        }
+        # POST to api.sharkexchange.in, NO auth headers for /v1/market/*
+        r = requests.post(
+            "https://api.sharkexchange.in/v1/market/klines",
+            json=body,
+            headers={"Content-Type": "application/json"},
+            timeout=10
+        )
+        resp = r.json()
+        print(f"Candle {r.status_code}: {str(resp)[:300]}")
+        for key in ["data", "result", "klines", "candles", "list"]:
+            if key in resp and isinstance(resp[key], list) and len(resp[key]) > 5:
+                return resp[key]
+        if isinstance(resp, list) and len(resp) > 5:
+            return resp
+        return []
+    except Exception as e:
+        print(f"Candle error: {e}")
+        return []
     
 
 def p(c, k):
