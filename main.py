@@ -27,23 +27,51 @@ def generate_signature(secret, data):
 
 def get_candles(limit=60):
     try:
-        r = requests.get(
-            f"{BINANCE_URL}/fapi/v1/klines",
-            params={"symbol": SYMBOL, "interval": "5m", "limit": limit},
+        body = {"pair": "BTCUSDT", "interval": "5m", "limit": limit}
+        r = requests.post(
+            f"{BASE_URL}/v1/market/klines",
+            json=body,
+            headers={"Content-Type": "application/json"},
             timeout=10
         )
-        raw = r.json()
+        resp = r.json()
+        print(f"Raw response: {str(resp)[:200]}")  # shows exact format
+
+        # try direct list
+        if isinstance(resp, list) and len(resp) > 5:
+            data = resp
+        else:
+            # try common wrapper keys
+            data = None
+            for key in ["data", "result", "klines", "candles", "list"]:
+                if key in resp and isinstance(resp[key], list):
+                    data = resp[key]
+                    break
+
+        if not data:
+            print(f"Unexpected response format: {resp}")
+            return []
+
         candles = []
-        for c in raw:
-            candles.append({
-                'open':   float(c[1]),
-                'high':   float(c[2]),
-                'low':    float(c[3]),
-                'close':  float(c[4]),
-                'volume': float(c[5])
-            })
+        for c in data:
+            if isinstance(c, dict):
+                candles.append({
+                    'open':   float(c.get('open',  c.get('o', 0))),
+                    'high':   float(c.get('high',  c.get('h', 0))),
+                    'low':    float(c.get('low',   c.get('l', 0))),
+                    'close':  float(c.get('close', c.get('c', 0))),
+                    'volume': float(c.get('volume',c.get('v', 0)))
+                })
+            elif isinstance(c, list):
+                candles.append({
+                    'open': float(c[1]), 'high': float(c[2]),
+                    'low':  float(c[3]), 'close': float(c[4]),
+                    'volume': float(c[5])
+                })
+
         print(f"Candle {r.status_code}: {str(candles[-1])[:150]}")
         return candles
+
     except Exception as e:
         print(f"Candle error: {e}")
         return []
