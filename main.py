@@ -6,156 +6,201 @@ import hashlib
 import json
 from datetime import datetime, timezone
 
-API_KEY    = os.environ.get("cf026d2ec839ca9fd7a39e38ba760d54", "")
-API_SECRET = os.environ.get("4a5a0f610536a56d551d99c86c858c34", "")
+# ─── CONFIG ────────────────────────────────────────────────
+API_KEY    = os.environ.get("API_KEY", "")
+API_SECRET = os.environ.get("API_SECRET", "")
+
 SYMBOL     = "BTCUSDT"
-SL_PTS     = 50
-RR         = 5
-TP_PTS     = SL_PTS * RR
-BALANCE    = 10000
-RISK_PCT   = 0.01
-MAX_LOSSES = 2
-BASE_URL   = "https://api.sharkexchange.in"
+BALANCE    = 5.40        # ₹500 = ~$5.40 USD
+RISK_PCT   = 0.02        # 2% risk per trade
+MIN_QTY    = 0.001       # Shark Exchange minimum BTC order
+LEVERAGE   = 20          # Set 20x in Shark Exchange UI too
 
-daily_losses = 0
-last_day     = datetime.now().date()
+SL_PTS     = 50          # $50 stop loss points
+RR         = 3           # Risk:Reward 1:3
+TP_PTS     = SL_PTS * RR # $150 take profit points
 
-def generate_signature(secret, data):
-    return hmac.new(secret.encode('utf-8'), data.encode('utf-8'), hashlib.sha256).hexdigest()
+MAX_DAILY_LOSS = 2       # Max losing trades per day
+CANDLE_LIMIT   = 210     # Candles to fetch
+INTERVAL       = "5m"    # Timeframe
 
-def get_candles(limit=60):
+BASE_URL   = "https://api.sharkexchange.com"  # update if different
+
+# ─── GLOBALS ───────────────────────────────────────────────
+daily_losses   = 0
+last_reset_day = datetime.now(timezone.utc).date()
+
+# ─── HELPERS ───────────────────────────────────────────────
+def get_timestamp():
+    return str(int(time.time() * 1000))
+
+def sign(params: dict):
+    query = "&".join(f"{k}={v}" for k, v in sorted(params.items()))
+    return hmac.new(API_SECRET.encode(), query.encode(), hashlib.sha256).hexdigest()
+
+def get_headers():
+    return {
+        "X-API-KEY": API_KEY,
+        "Content-Type": "application/json"
+    }
+
+# ─── MARKET DATA ───────────────────────────────────────────
+def get_candles():
     try:
-        body = {"pair": "BTCUSDT", "interval": "5m", "limit": limit}
-        r = requests.post(
-            f"{BASE_URL}/v1/market/klines",
-            json=body,
-            headers={"Content-Type": "application/json"},
-            timeout=10
-        )
-        resp = r.json()
-        print(f"Candle {r.status_code}: {str(resp)[:150]}")
-        if isinstance(resp, list) and len(resp) > 5:
-            return resp
-        for key in ["data", "result", "klines", "candles", "list"]:
-            if key in resp and isinstance(resp[key], list) and len(resp[key]) > 5:
-                return resp[key]
-        return []
-    except Exception as e:
-        print(f"Candle error: {e}")
-        return []
-
-def p(c, k):
-    if isinstance(c, dict):
-        mapping = {'o':'open','h':'high','l':'low','c':'close','v':'volume'}
-        return float(c.get(mapping[k], 0) or 0)
-    idx = {'o':1,'h':2,'l':3,'c':4,'v':5}
-    return float(c[idx[k]])
-
-def ema(values, period):
-    if len(values) < period: return values[-1]
-    k = 2 / (period + 1)
-    e = sum(values[:period]) / period
-    for v in values[period:]: e = v * k + e * (1 - k)
-    return e
-
-def compute_adx(candles, period=14):
-    if len(candles) < period + 2: return 0, 0, 0
-    trs, pdms, mdms = [], [], []
-    for i in range(1, len(candles)):
-        h,l,ph,pl,pc = p(candles[i],'h'),p(candles[i],'l'),p(candles[i-1],'h'),p(candles[i-1],'l'),p(candles[i-1],'c')
-        trs.append(max(h-l, abs(h-pc), abs(l-pc)))
-        pdms.append(max(h-ph,0) if (h-ph)>(pl-l) else 0)
-        mdms.append(max(pl-l,0) if (pl-l)>(h-ph) else 0)
-    def rma(vals, n):
-        r = sum(vals[:n])/n
-        for v in vals[n:]: r = (r*(n-1)+v)/n
-        return r
-    atr = rma(trs, period)
-    pdi = 100*rma(pdms,period)/(atr+0.0001)
-    mdi = 100*rma(mdms,period)/(atr+0.0001)
-    return 100*abs(pdi-mdi)/(pdi+mdi+0.0001), pdi, mdi
-
-def compute_atr_ratio(candles, period=14):
-    if len(candles) < period+5: return 1.0
-    trs = [max(p(candles[i],'h')-p(candles[i],'l'), abs(p(candles[i],'h')-p(candles[i-1],'c')), abs(p(candles[i],'l')-p(candles[i-1],'c'))) for i in range(1,len(candles))]
-    def rma(vals, n):
-        r = sum(vals[:n])/n
-        for v in vals[n:]: r = (r*(n-1)+v)/n
-        return r
-    return rma(trs, period) / (sum(trs[-20:])/20 + 0.0001)
-
-def compute_volz(candles, period=20):
-    if len(candles) < period: return 0
-    vols = [p(c,'v') for c in candles[-period:]]
-    mean = sum(vols)/period
-    std  = (sum((v-mean)**2 for v in vols)/period)**0.5
-    return (vols[-1]-mean)/(std+0.0001)
-
-def detect_fvg(candles):
-    c0,c1,c2 = candles[-1],candles[-2],candles[-3]
-    bear = p(c0,'h') < p(c2,'l') and p(c1,'c') < p(c1,'o')
-    bull = p(c0,'l') > p(c2,'h') and p(c1,'c') > p(c1,'o')
-    return bear, bull
-
-def check_filters(candles, is_long):
-    adx,_,_ = compute_adx(candles)
-    closes   = [p(c,'c') for c in candles]
-    ema_ok   = ema(closes,20) > ema(closes,50) if is_long else ema(closes,20) < ema(closes,50)
-    atr_r    = compute_atr_ratio(candles)
-    volz     = compute_volz(candles)
-    bodyr    = abs(p(candles[-2],'c')-p(candles[-2],'o'))/(p(candles[-2],'h')-p(candles[-2],'l')+0.0001)
-    sess_ok  = 7 <= datetime.now(timezone.utc).hour < 21
-    conf     = sum([adx>28, atr_r>1.1, volz>1.0, ema_ok, bodyr>0.5])
-    print(f"ADX:{adx:.1f} AtrR:{atr_r:.2f} VolZ:{volz:.2f} Body:{bodyr:.2f} EMA:{'OK' if ema_ok else 'NO'} Sess:{'OK' if sess_ok else 'NO'} Conf:{conf}/5")
-    return adx>28 and ema_ok and atr_r>1.0 and volz>1.0 and bodyr>0.5 and conf>=4 and sess_ok
-
-def place_order(side, qty, sl, tp):
-    ts = str(int(time.time()*1000))
-    params = {'timestamp':ts,'placeType':'ORDER_FORM','quantity':qty,'side':side,
-              'symbol':SYMBOL,'type':'MARKET','reduceOnly':False,'marginAsset':'INR',
-              'deviceType':'WEB','userCategory':'EXTERNAL','stopLossPrice':sl,'takeProfitPrice':tp}
-    sig = generate_signature(API_SECRET, json.dumps(params, separators=(',',':')))
-    headers = {'api-key':API_KEY,'signature':sig,'Content-Type':'application/json'}
-    try:
-        r = requests.post(f"{BASE_URL}/v1/order/place-order", json=params, headers=headers, timeout=10)
+        url = f"{BASE_URL}/api/v1/klines"
+        params = {
+            "symbol": SYMBOL,
+            "interval": INTERVAL,
+            "limit": CANDLE_LIMIT
+        }
+        r = requests.get(url, params=params, timeout=10)
         return r.json()
     except Exception as e:
-        print(f"Order error: {e}"); return {}
+        print(f"Candle fetch error: {e}")
+        return []
 
-print("BTC Rev FVG 5m Algo started")
-print(f"SL={SL_PTS} TP={TP_PTS} Risk={RISK_PCT*100}% MaxLoss={MAX_LOSSES}/day")
+def get_btc_price(candles):
+    if candles:
+        return float(candles[-1]['close'])
+    return 0.0
 
-while True:
+# ─── FVG DETECTION ─────────────────────────────────────────
+def detect_fvg(candles):
+    """
+    Bullish FVG : candle[i-2].high < candle[i].low   → gap up
+    Bearish FVG : candle[i-2].low  > candle[i].high  → gap down
+    Returns: ('LONG'/'SHORT', fvg_mid_price) or (None, None)
+    """
+    if len(candles) < 3:
+        return None, None
+
+    for i in range(len(candles) - 1, 1, -1):
+        try:
+            c0 = candles[i - 2]
+            c2 = candles[i]
+
+            h0 = float(c0['high'])
+            l0 = float(c0['low'])
+            h2 = float(c2['high'])
+            l2 = float(c2['low'])
+
+            # Bullish FVG
+            if h0 < l2:
+                fvg_mid = (h0 + l2) / 2
+                return "LONG", round(fvg_mid, 2)
+
+            # Bearish FVG
+            if l0 > h2:
+                fvg_mid = (l0 + h2) / 2
+                return "SHORT", round(fvg_mid, 2)
+
+        except Exception:
+            continue
+
+    return None, None
+
+# ─── POSITION SIZING ───────────────────────────────────────
+def calc_qty():
+    raw_qty = BALANCE * RISK_PCT / SL_PTS
+    return max(MIN_QTY, round(raw_qty, 6))
+
+# ─── ORDER PLACEMENT ───────────────────────────────────────
+def place_order(side, entry, sl, tp, qty):
     try:
-        today = datetime.now().date()
-        if today != last_day:
-            daily_losses = 0; last_day = today
-            print("New day - loss counter reset")
-        if daily_losses >= MAX_LOSSES:
-            print("Max losses - waiting..."); time.sleep(300); continue
+        ts = get_timestamp()
+        payload = {
+            "symbol":    SYMBOL,
+            "side":      side,           # "BUY" or "SELL"
+            "type":      "LIMIT",
+            "price":     str(entry),
+            "quantity":  str(qty),
+            "stopLoss":  str(sl),
+            "takeProfit": str(tp),
+            "timestamp": ts
+        }
+        payload["signature"] = sign(payload)
 
-        candles = get_candles(60)
-        if len(candles) < 55:
-            print(f"Not enough candles ({len(candles)}) - retrying...")
-            time.sleep(30); continue
-
-        now_str = datetime.now(timezone.utc).strftime('%H:%M:%S UTC')
-        price   = p(candles[-1],'c')
-        bear, bull = detect_fvg(candles)
-
-        if bear and check_filters(candles, True):
-            sl,tp,qty = round(price-SL_PTS,2), round(price+TP_PTS,2), max(round((BALANCE*RISK_PCT)/SL_PTS,4),0.0001)
-            print(f"LONG | {now_str} | Entry:{price} SL:{sl} TP:{tp} Qty:{qty}")
-            print(f"Result: {place_order('BUY',qty,sl,tp)}")
-            time.sleep(310)
-        elif bull and check_filters(candles, False):
-            sl,tp,qty = round(price+SL_PTS,2), round(price-TP_PTS,2), max(round((BALANCE*RISK_PCT)/SL_PTS,4),0.0001)
-            print(f"SHORT | {now_str} | Entry:{price} SL:{sl} TP:{tp} Qty:{qty}")
-            print(f"Result: {place_order('SELL',qty,sl,tp)}")
-            time.sleep(310)
-        else:
-            print(f"No signal | {now_str} | BTC:{price}")
-            time.sleep(60)
+        r = requests.post(
+            f"{BASE_URL}/api/v1/order",
+            headers=get_headers(),
+            json=payload,
+            timeout=10
+        )
+        return r.json()
 
     except Exception as e:
-        print(f"Error: {e}"); time.sleep(30)
+        print(f"Order error: {e}")
+        return None
+
+# ─── DAILY LOSS RESET ──────────────────────────────────────
+def check_reset():
+    global daily_losses, last_reset_day
+    today = datetime.now(timezone.utc).date()
+    if today != last_reset_day:
+        daily_losses   = 0
+        last_reset_day = today
+
+# ─── MAIN LOOP ─────────────────────────────────────────────
+def main():
+    global daily_losses
+
+    print(f"BTC Rev FVG 5m Algo started")
+    print(f"SL={SL_PTS} TP={TP_PTS} Risk={RISK_PCT*100}% MaxLoss={MAX_DAILY_LOSS}/day")
+
+    candle_count = 0
+
+    while True:
+        try:
+            check_reset()
+
+            if daily_losses >= MAX_DAILY_LOSS:
+                print(f"Max daily loss hit. Sleeping till next day...")
+                time.sleep(60)
+                continue
+
+            candles = get_candles()
+            candle_count += 1
+            price   = get_btc_price(candles)
+            now_utc = datetime.now(timezone.utc).strftime("%H:%M:%S")
+
+            if candles:
+                print(f"Candle {candle_count}: [{candles[-1]}]")
+
+            signal, fvg_price = detect_fvg(candles)
+
+            if signal is None:
+                print(f"No signal | {now_utc} UTC | BTC:{price}")
+
+            else:
+                qty = calc_qty()
+
+                if signal == "LONG":
+                    entry = fvg_price
+                    sl    = round(entry - SL_PTS, 2)
+                    tp    = round(entry + TP_PTS, 2)
+                    side  = "BUY"
+                else:
+                    entry = fvg_price
+                    sl    = round(entry + SL_PTS, 2)
+                    tp    = round(entry - TP_PTS, 2)
+                    side  = "SELL"
+
+                print(f"{signal} | {now_utc} UTC | BTC:{price} | Entry:{entry} SL:{sl} TP:{tp} Qty:{qty}")
+
+                result = place_order(side, entry, sl, tp, qty)
+                print(f"Order result: {result}")
+
+                if result and result.get("status") == "FILLED":
+                    print(f"✅ Order filled!")
+                elif result and "error" in str(result).lower():
+                    print(f"❌ Order failed: {result}")
+                    daily_losses += 1
+
+            time.sleep(60)
+
+        except Exception as e:
+            print(f"Loop error: {e}")
+            time.sleep(30)
+
+if __name__ == "__main__":
+    main()
