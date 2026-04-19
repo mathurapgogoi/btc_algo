@@ -29,10 +29,12 @@ def get_candles(limit=60):
     try:
         r = requests.get(
             f"{BASE_URL}/v1/market/klines",
-            params={"symbol": SYMBOL, "interval": "5m", "limit": limit},
+            params={"symbol": SYMBOL, "interval": "5m", "limit": str(limit)},
             timeout=10
         )
-        return r.json().get("data", [])
+       resp = r.json()
+print(f"API response keys: {list(resp.keys())}")
+return resp.get("data", resp.get("result", resp.get("klines", [])))
     except Exception as e:
         print(f"Candle error: {e}")
         return []
