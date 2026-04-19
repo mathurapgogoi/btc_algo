@@ -36,8 +36,11 @@ def get_candles(limit=60):
         candles = []
         for c in raw:
             candles.append({
-                'open': c[1], 'high': c[2],
-                'low':  c[3], 'close': c[4], 'volume': c[5]
+                'open':   float(c[1]),
+                'high':   float(c[2]),
+                'low':    float(c[3]),
+                'close':  float(c[4]),
+                'volume': float(c[5])
             })
         print(f"Candle {r.status_code}: {str(candles[-1])[:150]}")
         return candles
