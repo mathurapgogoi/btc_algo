@@ -16,6 +16,7 @@ BALANCE    = 5.40        # ₹500 = ~$5.40
 RISK_PCT   = 0.02
 MIN_QTY    = 0.001
 MAX_LOSSES = 2
+BASE_URL   = "https://api.sharkexchange.in"
 SHARK_URL  = "https://api.sharkexchange.in"
 BINANCE_URL = "https://fapi.binance.com"   # for candle data only
 
