@@ -31,24 +31,26 @@ BASE_URL   = "https://api.sharkexchange.in"
 
 def get_candles(limit=60):
     try:
-        body = {
-            "pair":     SYMBOL,
-            "interval": "5m",
-            "limit":    limit
-        }
-        r = requests.post(
-            "https://api.sharkexchange.in/v1/market/klines",
-            json=body,
-            headers={"Content-Type": "application/json"},
-            timeout=10
-        )
-        resp = r.json()
-        print(f"Candle {r.status_code}: {str(resp)[:300]}")
-        for key in ["data", "result", "klines", "candles", "list"]:
-            if key in resp and isinstance(resp[key], list) and len(resp[key]) > 5:
-                return resp[key]
-        if isinstance(resp, list) and len(resp) > 5:
-            return resp
+        # Try multiple pair name formats
+        pairs_to_try = ["BTCUSDT", "BTC-USDT", "BTC/USDT", "BTCUSD", "BTC_USD", "btcusdt"]
+        for pair in pairs_to_try:
+            body = {"pair": pair, "interval": "5m", "limit": limit}
+            r = requests.post(
+                "https://api.sharkexchange.in/v1/market/klines",
+                json=body,
+                headers={"Content-Type": "application/json"},
+                timeout=10
+            )
+            resp = r.json()
+            print(f"Pair:{pair} Status:{r.status_code} Resp:{str(resp)[:150]}")
+            if r.status_code in [200, 201]:
+                for key in ["data", "result", "klines", "candles", "list"]:
+                    if key in resp and isinstance(resp[key], list) and len(resp[key]) > 5:
+                        print(f"SUCCESS with pair={pair} key={key}")
+                        return resp[key]
+                if isinstance(resp, list) and len(resp) > 5:
+                    print(f"SUCCESS with pair={pair} list format")
+                    return resp
         return []
     except Exception as e:
         print(f"Candle error: {e}")
