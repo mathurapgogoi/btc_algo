@@ -27,7 +27,7 @@ def generate_signature(secret, data):
 
 def get_candles(limit=60):
     try:
-        body = {"pair": "BTCUSDT", "interval": "5m", "limit": limit}
+        body = {"pair": "BTCUSDT", "interval": "1m", "limit": limit}
         r = requests.post(
             f"{BASE_URL}/v1/market/klines",
             json=body,
