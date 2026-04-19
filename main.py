@@ -15,33 +15,35 @@ TP_PTS       = SL_PTS * RR
 BALANCE      = 10000
 RISK_PCT     = 0.01
 MAX_LOSSES   = 2
-BASE_URL     = "https://api.sharkexchange.in"   # authenticated
-PUBLIC_URL   = "https://api.sharkexchange.in"   # public market data
+BASE_URL     = "https://api.sharkexchange.in"
+PUBLIC_URL   = "https://api.sharkexchange.in"
 
 daily_losses = 0
 last_day     = datetime.now().date()
 
-def sign(data):
-    body = json.dumps(data, separators=(',', ':'))
-    sig  = hmac.new(API_SECRET.encode(), body.encode(), hashlib.sha256).hexdigest()
-    return body, sig
+def generate_signature(api_secret, data_to_sign):
+    return hmac.new(
+        api_secret.encode('utf-8'),
+        data_to_sign.encode('utf-8'),
+        hashlib.sha256
+    ).hexdigest()
 
-# ── FIXED: klines is POST, not GET ─────────────────────────
+# ── PUBLIC endpoint — GET with query params, no auth needed ──
 def get_candles(limit=60):
     try:
         params = {
             "symbol":    SYMBOL,
             "interval":  "5m",
-            "limit":     limit,
+            "limit":     str(limit),
             "priceType": "LAST_PRICE"
         }
-        r = requests.post(
+        r = requests.get(
             f"{PUBLIC_URL}/v1/market/klines",
-            json=params,
+            params=params,
             timeout=10
         )
         resp = r.json()
-        print(f"Candle API {r.status_code}: {str(resp)[:200]}")
+        print(f"Candle {r.status_code}: {str(resp)[:200]}")
         for key in ["data", "result", "klines", "candles", "list"]:
             if key in resp and isinstance(resp[key], list) and len(resp[key]) > 0:
                 return resp[key]
@@ -51,6 +53,21 @@ def get_candles(limit=60):
     except Exception as e:
         print(f"Candle error: {e}")
         return []
+
+def parse_candle(c):
+    # Handle both dict format and list/array format
+    if isinstance(c, dict):
+        return {
+            'o': float(c.get('open',   c.get('o', 0))),
+            'h': float(c.get('high',   c.get('h', 0))),
+            'l': float(c.get('low',    c.get('l', 0))),
+            'c': float(c.get('close',  c.get('c', 0))),
+            'v': float(c.get('volume', c.get('v', 0))),
+        }
+    else:
+        # array format [time, open, high, low, close, volume]
+        return {'o': float(c[1]), 'h': float(c[2]),
+                'l': float(c[3]), 'c': float(c[4]), 'v': float(c[5])}
 
 def ema(values, period):
     if len(values) < period:
@@ -66,14 +83,11 @@ def compute_adx(candles, period=14):
         return 0, 0, 0
     trs, pdms, mdms = [], [], []
     for i in range(1, len(candles)):
-        h  = float(candles[i][2])
-        l  = float(candles[i][3])
-        ph = float(candles[i-1][2])
-        pl = float(candles[i-1][3])
-        pc = float(candles[i-1][4])
-        tr  = max(h - l, abs(h - pc), abs(l - pc))
-        pdm = max(h - ph, 0) if (h - ph) > (pl - l) else 0
-        mdm = max(pl - l, 0) if (pl - l) > (h - ph) else 0
+        c  = parse_candle(candles[i])
+        pc = parse_candle(candles[i-1])
+        tr  = max(c['h'] - c['l'], abs(c['h'] - pc['c']), abs(c['l'] - pc['c']))
+        pdm = max(c['h'] - pc['h'], 0) if (c['h'] - pc['h']) > (pc['l'] - c['l']) else 0
+        mdm = max(pc['l'] - c['l'], 0) if (pc['l'] - c['l']) > (c['h'] - pc['h']) else 0
         trs.append(tr); pdms.append(pdm); mdms.append(mdm)
     def rma(vals, p):
         r = sum(vals[:p]) / p
@@ -90,10 +104,9 @@ def compute_atr_ratio(candles, period=14):
         return 1.0
     trs = []
     for i in range(1, len(candles)):
-        h  = float(candles[i][2])
-        l  = float(candles[i][3])
-        pc = float(candles[i-1][4])
-        trs.append(max(h - l, abs(h - pc), abs(l - pc)))
+        c  = parse_candle(candles[i])
+        pc = parse_candle(candles[i-1])
+        trs.append(max(c['h'] - c['l'], abs(c['h'] - pc['c']), abs(c['l'] - pc['c'])))
     def rma(vals, p):
         r = sum(vals[:p]) / p
         for v in vals[p:]: r = (r * (p - 1) + v) / p
@@ -103,65 +116,68 @@ def compute_atr_ratio(candles, period=14):
 def compute_volz(candles, period=20):
     if len(candles) < period:
         return 0
-    vols = [float(c[5]) for c in candles[-period:]]
+    vols = [parse_candle(c)['v'] for c in candles[-period:]]
     mean = sum(vols) / period
     std  = (sum((v - mean) ** 2 for v in vols) / period) ** 0.5
     return (vols[-1] - mean) / (std + 0.0001)
 
 def compute_bodyr(c):
-    body = abs(float(c[4]) - float(c[1]))
-    wick = float(c[2]) - float(c[3])
-    return body / (wick + 0.0001)
+    p = parse_candle(c)
+    return abs(p['c'] - p['o']) / (p['h'] - p['l'] + 0.0001)
 
 def detect_fvg(candles):
-    # candle format: [time, open, high, low, close, volume]
-    c0 = candles[-1]; c1 = candles[-2]; c2 = candles[-3]
-    bear_fvg = float(c0[2]) < float(c2[3]) and float(c1[4]) < float(c1[1])
-    bull_fvg = float(c0[3]) > float(c2[2]) and float(c1[4]) > float(c1[1])
+    c0 = parse_candle(candles[-1])
+    c1 = parse_candle(candles[-2])
+    c2 = parse_candle(candles[-3])
+    bear_fvg = c0['h'] < c2['l'] and c1['c'] < c1['o']
+    bull_fvg = c0['l'] > c2['h'] and c1['c'] > c1['o']
     return bear_fvg, bull_fvg
 
 def check_filters(candles, is_long):
-    adx, _, _  = compute_adx(candles)
-    closes     = [float(c[4]) for c in candles]
-    e20        = ema(closes, 20)
-    e50        = ema(closes, 50)
-    atr_ratio  = compute_atr_ratio(candles)
-    volz       = compute_volz(candles)
-    bodyr      = compute_bodyr(candles[-2])
-    ema_ok     = e20 > e50 if is_long else e20 < e50
-    session_ok = 7 <= datetime.utcnow().hour < 21
-    c1 = 1 if adx > 28        else 0
-    c2 = 1 if atr_ratio > 1.1 else 0
-    c3 = 1 if volz > 1.0      else 0
-    c4 = 1 if ema_ok           else 0
-    c5 = 1 if bodyr > 0.5     else 0
-    conf = c1 + c2 + c3 + c4 + c5
-    print(f"ADX:{adx:.1f} AtrR:{atr_ratio:.2f} VolZ:{volz:.2f} Body:{bodyr:.2f} EMA:{'OK' if ema_ok else 'NO'} Sess:{'OK' if session_ok else 'NO'} Conf:{conf}/5")
-    return adx > 28 and ema_ok and atr_ratio > 1.0 and volz > 1.0 and bodyr > 0.5 and conf >= 4 and session_ok
+    adx, _, _ = compute_adx(candles)
+    closes    = [parse_candle(c)['c'] for c in candles]
+    e20       = ema(closes, 20)
+    e50       = ema(closes, 50)
+    atr_ratio = compute_atr_ratio(candles)
+    volz      = compute_volz(candles)
+    bodyr     = compute_bodyr(candles[-2])
+    ema_ok    = e20 > e50 if is_long else e20 < e50
+    sess_ok   = 7 <= datetime.utcnow().hour < 21
+    conf = sum([adx > 28, atr_ratio > 1.1, volz > 1.0, ema_ok, bodyr > 0.5])
+    print(f"ADX:{adx:.1f} AtrR:{atr_ratio:.2f} VolZ:{volz:.2f} Body:{bodyr:.2f} EMA:{'OK' if ema_ok else 'NO'} Sess:{'OK' if sess_ok else 'NO'} Conf:{conf}/5")
+    return adx > 28 and ema_ok and atr_ratio > 1.0 and volz > 1.0 and bodyr > 0.5 and conf >= 4 and sess_ok
 
 def get_qty():
     return max(round((BALANCE * RISK_PCT) / SL_PTS, 4), 0.0001)
 
 def place_order(side, qty, sl_price, tp_price):
-    ts   = str(int(time.time() * 1000))
-    data = {
-        "timestamp":       ts,
-        "placeType":       "ORDER_FORM",
-        "symbol":          SYMBOL,
-        "side":            side,
-        "type":            "MARKET",
-        "quantity":        qty,
-        "stopLossPrice":   sl_price,
-        "takeProfitPrice": tp_price,
-        "marginAsset":     "INR",
-        "reduceOnly":      False,
-        "deviceType":      "WEB",
-        "userCategory":    "EXTERNAL"
+    timestamp = str(int(time.time() * 1000))
+    params = {
+        'timestamp':       timestamp,
+        'placeType':       'ORDER_FORM',
+        'quantity':        qty,
+        'side':            side,
+        'symbol':          SYMBOL,
+        'type':            'MARKET',
+        'reduceOnly':      False,
+        'marginAsset':     'INR',
+        'deviceType':      'WEB',
+        'userCategory':    'EXTERNAL',
+        'stopLossPrice':   sl_price,
+        'takeProfitPrice': tp_price,
     }
-    body, sig = sign(data)
-    headers = {"api-key": API_KEY, "signature": sig, "Content-Type": "application/json"}
+    data_to_sign = json.dumps(params, separators=(',', ':'))
+    signature    = generate_signature(API_SECRET, data_to_sign)
+    headers = {
+        'api-key':      API_KEY,
+        'signature':    signature,
+        'Content-Type': 'application/json'
+    }
     try:
-        r = requests.post(f"{BASE_URL}/v1/order/place-order", data=body, headers=headers, timeout=10)
+        r = requests.post(
+            f"{BASE_URL}/v1/order/place-order",
+            json=params, headers=headers, timeout=10
+        )
         return r.json()
     except Exception as e:
         print(f"Order error: {e}")
@@ -190,7 +206,7 @@ while True:
             continue
 
         now_str  = datetime.utcnow().strftime('%H:%M:%S UTC')
-        price    = float(candles[-1][4])
+        price    = parse_candle(candles[-1])['c']
         bear_fvg, bull_fvg = detect_fvg(candles)
 
         if bear_fvg and check_filters(candles, is_long=True):
