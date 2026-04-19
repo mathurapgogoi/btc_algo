@@ -31,14 +31,11 @@ BASE_URL   = "https://api.sharkexchange.in"
 
 def get_candles(limit=60):
     try:
-        # No timestamp for public/market endpoints per official docs
         body = {
-            "symbol":    SYMBOL,
-            "interval":  "5m",
-            "limit":     limit,
-            "priceType": "LAST_PRICE"
+            "pair":     SYMBOL,
+            "interval": "5m",
+            "limit":    limit
         }
-        # POST to api.sharkexchange.in, NO auth headers for /v1/market/*
         r = requests.post(
             "https://api.sharkexchange.in/v1/market/klines",
             json=body,
@@ -56,7 +53,6 @@ def get_candles(limit=60):
     except Exception as e:
         print(f"Candle error: {e}")
         return []
-    
 
 def p(c, k):
     if isinstance(c, dict):
