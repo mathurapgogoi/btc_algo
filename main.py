@@ -4,21 +4,19 @@ import time
 import hmac
 import hashlib
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 
-API_KEY    = os.environ.get("cf026d2ec839ca9fd7a39e38ba760d54", "")
+API_KEY    = os.environ.get("cf026d2ec839ca9fd7a39e38ba760d54
+", "")
 API_SECRET = os.environ.get("4a5a0f610536a56d551d99c86c858c34", "")
-SYMBOL     = "BTC_USDT"
+SYMBOL     = "BTCUSDT"
 SL_PTS     = 50
 RR         = 5
 TP_PTS     = SL_PTS * RR
 BALANCE    = 10000
 RISK_PCT   = 0.01
 MAX_LOSSES = 2
-
-# Two different base URLs as per official docs
 BASE_URL   = "https://api.sharkexchange.in"
-PUBLIC_URL = "https://api.sharkexchange.in"
 
 daily_losses = 0
 last_day     = datetime.now().date()
@@ -26,31 +24,22 @@ last_day     = datetime.now().date()
 def generate_signature(secret, data):
     return hmac.new(secret.encode('utf-8'), data.encode('utf-8'), hashlib.sha256).hexdigest()
 
-# klines is POST on publicBaseUrl — no auth needed
-BASE_URL   = "https://api.sharkexchange.in"
-
 def get_candles(limit=60):
     try:
-        # Try multiple pair name formats
-        pairs_to_try = ["BTCUSDT", "BTC-USDT", "BTC/USDT", "BTCUSD", "BTC_USD", "btcusdt"]
-        for pair in pairs_to_try:
-            body = {"pair": pair, "interval": "5m", "limit": limit}
-            r = requests.post(
-                "https://api.sharkexchange.in/v1/market/klines",
-                json=body,
-                headers={"Content-Type": "application/json"},
-                timeout=10
-            )
-            resp = r.json()
-            print(f"Pair:{pair} Status:{r.status_code} Resp:{str(resp)[:150]}")
-            if r.status_code in [200, 201]:
-                for key in ["data", "result", "klines", "candles", "list"]:
-                    if key in resp and isinstance(resp[key], list) and len(resp[key]) > 5:
-                        print(f"SUCCESS with pair={pair} key={key}")
-                        return resp[key]
-                if isinstance(resp, list) and len(resp) > 5:
-                    print(f"SUCCESS with pair={pair} list format")
-                    return resp
+        body = {"pair": "BTCUSDT", "interval": "5m", "limit": limit}
+        r = requests.post(
+            f"{BASE_URL}/v1/market/klines",
+            json=body,
+            headers={"Content-Type": "application/json"},
+            timeout=10
+        )
+        resp = r.json()
+        print(f"Candle {r.status_code}: {str(resp)[:150]}")
+        if isinstance(resp, list) and len(resp) > 5:
+            return resp
+        for key in ["data", "result", "klines", "candles", "list"]:
+            if key in resp and isinstance(resp[key], list) and len(resp[key]) > 5:
+                return resp[key]
         return []
     except Exception as e:
         print(f"Candle error: {e}")
@@ -58,7 +47,8 @@ def get_candles(limit=60):
 
 def p(c, k):
     if isinstance(c, dict):
-        return float(c.get(k, 0))
+        mapping = {'o':'open','h':'high','l':'low','c':'close','v':'volume'}
+        return float(c.get(mapping[k], 0) or 0)
     idx = {'o':1,'h':2,'l':3,'c':4,'v':5}
     return float(c[idx[k]])
 
@@ -73,7 +63,7 @@ def compute_adx(candles, period=14):
     if len(candles) < period + 2: return 0, 0, 0
     trs, pdms, mdms = [], [], []
     for i in range(1, len(candles)):
-        h, l, ph, pl, pc = p(candles[i],'h'), p(candles[i],'l'), p(candles[i-1],'h'), p(candles[i-1],'l'), p(candles[i-1],'c')
+        h,l,ph,pl,pc = p(candles[i],'h'),p(candles[i],'l'),p(candles[i-1],'h'),p(candles[i-1],'l'),p(candles[i-1],'c')
         trs.append(max(h-l, abs(h-pc), abs(l-pc)))
         pdms.append(max(h-ph,0) if (h-ph)>(pl-l) else 0)
         mdms.append(max(pl-l,0) if (pl-l)>(h-ph) else 0)
@@ -115,7 +105,7 @@ def check_filters(candles, is_long):
     atr_r    = compute_atr_ratio(candles)
     volz     = compute_volz(candles)
     bodyr    = abs(p(candles[-2],'c')-p(candles[-2],'o'))/(p(candles[-2],'h')-p(candles[-2],'l')+0.0001)
-    sess_ok  = 7 <= datetime.utcnow().hour < 21
+    sess_ok  = 7 <= datetime.now(timezone.utc).hour < 21
     conf     = sum([adx>28, atr_r>1.1, volz>1.0, ema_ok, bodyr>0.5])
     print(f"ADX:{adx:.1f} AtrR:{atr_r:.2f} VolZ:{volz:.2f} Body:{bodyr:.2f} EMA:{'OK' if ema_ok else 'NO'} Sess:{'OK' if sess_ok else 'NO'} Conf:{conf}/5")
     return adx>28 and ema_ok and atr_r>1.0 and volz>1.0 and bodyr>0.5 and conf>=4 and sess_ok
@@ -150,7 +140,7 @@ while True:
             print(f"Not enough candles ({len(candles)}) - retrying...")
             time.sleep(30); continue
 
-        now_str = datetime.utcnow().strftime('%H:%M:%S UTC')
+        now_str = datetime.now(timezone.utc).strftime('%H:%M:%S UTC')
         price   = p(candles[-1],'c')
         bear, bull = detect_fvg(candles)
 
