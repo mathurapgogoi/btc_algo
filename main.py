@@ -27,21 +27,31 @@ def generate_signature(secret, data):
     return hmac.new(secret.encode('utf-8'), data.encode('utf-8'), hashlib.sha256).hexdigest()
 
 # klines is POST on publicBaseUrl — no auth needed
+BASE_URL   = "https://api.sharkexchange.in"
+
 def get_candles(limit=60):
-    try:
-        params = {"symbol": SYMBOL, "interval": "5m", "limit": limit, "priceType": "LAST_PRICE"}
-        r = requests.post(f"{PUBLIC_URL}/v1/market/klines", json=params, timeout=10)
-        resp = r.json()
-        print(f"Candle {r.status_code}: {str(resp)[:200]}")
-        for key in ["data", "result", "klines", "candles", "list"]:
-            if key in resp and isinstance(resp[key], list) and len(resp[key]) > 0:
-                return resp[key]
-        if isinstance(resp, list) and len(resp) > 0:
-            return resp
-        return []
-    except Exception as e:
-        print(f"Candle error: {e}")
-        return []
+    urls_to_try = [
+        ("POST", "https://api.sharkexchange.in/v1/market/klines"),
+        ("POST", "https://market.sharkexchange.in/v1/market/klines"),
+        ("POST", "https://data.sharkexchange.in/v1/market/klines"),
+        ("POST", "https://public.sharkexchange.in/v1/market/klines"),
+    ]
+    body = {"symbol": SYMBOL, "interval": "5m", "limit": limit, "priceType": "LAST_PRICE"}
+    for method, url in urls_to_try:
+        try:
+            r = requests.post(url, json=body, timeout=5)
+            print(f"{r.status_code} {url[:50]}: {str(r.json())[:100]}")
+            if r.status_code == 200:
+                resp = r.json()
+                for key in ["data", "result", "klines", "candles", "list"]:
+                    if key in resp and isinstance(resp[key], list) and len(resp[key]) > 5:
+                        return resp[key]
+                if isinstance(resp, list) and len(resp) > 5:
+                    return resp
+        except Exception as e:
+            print(f"Error {url[:40]}: {e}")
+    return []
+    
 
 def p(c, k):
     if isinstance(c, dict):
